@@ -44,7 +44,7 @@ jobs:
 
     - name: Build Docker image
       run: |
-        docker build -t nvtop-webapp:${GITHUB_SHA} .
+        docker build -t nvtop-webapp:${GITHUB_SHA} -t nvtop-webapp .
 
   security-scan:
     name: Security Scan
@@ -57,7 +57,7 @@ jobs:
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: 'nvtop-webapp:${GITHUB_SHA}'
+        image-ref: 'nvtop-webapp'
         format: 'table'
         exit-code: '1'
         ignore-unfixed: true
