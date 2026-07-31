@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  nvtop-webapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nvtop-webapp
+    ports:
+      - "5000:5000"
+    environment:
+      - AUTH_USER=nvtop-admin
+      - AUTH_PASSWORD=${NVTOP_AUTH_PASSWORD:-secret}  # CHANGE THIS!
+      - PORT=5000
+      - CONFIG_PATH=/app/instance/config.json
+      - COMFY_UI_URL=http://host.docker.internal:17493  # Optional host service URL
+    volumes:
+      - ./instance:/app/instance:ro
+      - ./opt/nvtop/actions:/opt/nvtop/actions:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
