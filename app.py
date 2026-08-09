@@ -63,7 +63,8 @@ def get_status():
     except FileNotFoundError:
         return jsonify({"error": "nvtop binary not found - is it installed?"}), 500
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.exception("Failed to get nvtop status")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route('/api/action/<action_name>', methods=['POST'])
@@ -111,7 +112,8 @@ def run_action(action_name):
     except subprocess.TimeoutExpired:
         return jsonify({"error": f"Action '{action_name}' timed out"}), 504
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.exception("Failed to run action '%s'", action_name)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route('/api/login', methods=['POST'])
