@@ -36,8 +36,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
     FLASK_ENV=production
 
 # Copy application files (excluding gitignored)
-COPY --chown=nvtop:nvtop app.py config.py .gitignore ./
-COPY --chown=nvtop:nvtop instance/ instance/
+COPY --chown=nvtop:nvtop app.py .gitignore ./
+COPY --chown=nvtop:nvtop templates/ templates/
+COPY --chown=nvtop:nvtop instance/config.json instance/config.json
 
 # Create log directory
 RUN mkdir -p /app/logs && \
@@ -52,4 +53,4 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status')" || exit 1
 
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--access-logfile", "-", "app:app"]

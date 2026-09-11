@@ -1,54 +1,37 @@
 #!/bin/bash
-# setup.sh - One-time setup for nvtop-webpage container
-# Run this once before starting the Docker container
-set -e
+# One-time Docker Compose setup.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONTAINER_NAME="nvtop-webapp"
+cd "${SCRIPT_DIR}"
 
-echo "=== NVTop Webpage Container Setup ==="
+command -v docker >/dev/null || {
+    echo "Docker is required." >&2
+    exit 1
+}
+command -v openssl >/dev/null || {
+    echo "OpenSSL is required to generate credentials." >&2
+    exit 1
+}
 
-# Create necessary directories inside container
-docker run --rm \
-  --name nvtop-temp \
-  --entrypoint "" \
-  -v "${SCRIPT_DIR}:/app:ro" \
-  nvtop-webapp \
-  mkdir -p /app/instance/logs \
-  mkdir -p /opt/nvtop/actions/logs
+mkdir -p instance/logs
+chmod 700 instance/logs
 
-# Copy config if exists, otherwise create default
-CONFIG_FILE="${SCRIPT_DIR}/instance/config.json"
-if [ ! -f "$CONFIG_FILE" ] && [ -f "${SCRIPT_DIR}/instance/config.json.example" ]; then
-    echo "Config not found. Using example template."
-    docker run --rm \
-      --name nvtop-temp2 \
-      --entrypoint "" \
-      -v "${SCRIPT_DIR}:/app:ro" \
-      nvtop-webapp \
-      cp /app/instance/config.json.example /app/instance/config.json
-    
-    echo "⚠️  WARNING: Remember to set AUTH_PASSWORD before starting!"
+if [[ ! -f .env ]]; then
+    umask 077
+    {
+        echo "NVTOP_AUTH_USER=nvtop-admin"
+        echo "NVTOP_AUTH_PASSWORD=$(openssl rand -base64 32)"
+        echo "NVTOP_SECRET_KEY=$(openssl rand -hex 32)"
+    } > .env
+    echo "Created .env with random credentials."
 else
-    if [ -f "$CONFIG_FILE" ]; then
-        echo "Using existing config.json"
-    fi
+    echo "Using existing .env."
 fi
 
-# Remove temp containers
-docker rm -f nvtop-temp >/dev/null 2>&1 || true
-docker rm -f nvtop-temp2 >/dev/null 2>&1 || true
+chmod 600 .env
+docker compose config >/dev/null
+docker compose build
 
-echo ""
-echo "=== Setup Complete ==="
-echo ""
-echo "To start the container:"
-echo "  docker-compose up -d"
-echo ""
-echo "Or directly:"
-echo "  docker run -d \\"
-echo "    --name nvtop-webapp \\"
-echo "    -p 5000:5000 \\"
-echo "    -e AUTH_USER=\"nvtop-admin\" \\"
-echo "    -e AUTH_PASSWORD=\"your-secret-password\" \\"
-echo "    nvtop-webapp"
+echo "Setup complete. Run: docker compose up -d"
+echo "Then open: http://127.0.0.1:5001"

@@ -1,24 +1,32 @@
-version: '3.8'
-
 services:
   nvtop-webapp:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: nvtop-webapp
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5001:5000"
     environment:
-      - AUTH_USER=nvtop-admin
-      - AUTH_PASSWORD=${NVTOP_AUTH_PASSWORD:-secret}  # CHANGE THIS!
-      - PORT=5000
-      - CONFIG_PATH=/app/instance/config.json
-      - COMFY_UI_URL=http://host.docker.internal:17493  # Optional host service URL
+      AUTH_USER: ${NVTOP_AUTH_USER:-nvtop-admin}
+      AUTH_PASSWORD: ${NVTOP_AUTH_PASSWORD:?Set NVTOP_AUTH_PASSWORD in .env}
+      SECRET_KEY: ${NVTOP_SECRET_KEY:?Set NVTOP_SECRET_KEY in .env}
+      AUTH_TOKEN: ${NVTOP_AUTH_TOKEN:-}
+      PORT: "5000"
+      CONFIG_PATH: /app/instance/config.json
+      LOG_PATH: /app/instance/logs/action.log
     volumes:
-      - ./instance:/app/instance:ro
+      - ./instance/config.json:/app/instance/config.json:ro
+      - ./instance/logs:/app/instance/logs
       - ./opt/nvtop/actions:/opt/nvtop/actions:ro
+    gpus: all
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
       interval: 30s
       timeout: 10s
       retries: 3

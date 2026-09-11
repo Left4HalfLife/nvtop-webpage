@@ -1,60 +1,9 @@
 {
-    "log_file": "logs/action.log",
-    
     "actions": {
-        "unload_all_lm_models": {
-            "description": "Unload all LM Studio models",
-            "command": ["lms", "unload", "-a"],
-            "timeout": 45,
-            "args": {},
-            "requires_restart": false
-        },
-        
-        "check_loaded_models": {
-            "description": "Check currently loaded models",
-            "command": ["lms", "ls"],
+        "list_gpus": {
+            "description": "List GPUs",
+            "command": ["nvidia-smi", "-L"],
             "timeout": 10,
-            "args": {},
-            "requires_restart": false
-        },
-        
-        "unload_comfyui": {
-            "description": "Clear all ComfyUI models",
-            "command": ["curl", "-X", "POST", "${COMFY_UI_URL:-http://host.docker.internal:17493}/models/unload"],
-            "timeout": 20,
-            "args": {},
-            "requires_restart": false
-        },
-        
-        "load_small_creative": {
-            "description": "Load Small Creative (lunaris) model",
-            "command": ["lms", "load", "lunaris", "-c", "8192"],
-            "timeout": 120,
-            "args": {},
-            "requires_restart": false
-        },
-        
-        "load_large_agentic": {
-            "description": "Load Large Agentic (qwen3.5-9b) model",
-            "command": ["lms", "load", "qwen3.5-9b", "-c", "131076"],
-            "timeout": 180,
-            "args": {},
-            "requires_restart": false
-        },
-        
-        "reload_drivers": {
-            "description": "Reload NVIDIA GPU drivers",
-            "command": ["/opt/nvtop/actions/reload_drivers.sh"],
-            "timeout": 60,
-            "args": {},
-            "requires_restart": true
-        },
-        
-        "save_state": {
-            "description": "Capture current nvtop screen",
-            "command": ["/opt/nvtop/actions/save_state.sh"],
-            "timeout": 30,
-            "args": {},
             "requires_restart": false
         }
     }

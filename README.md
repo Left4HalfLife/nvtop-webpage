@@ -1,216 +1,104 @@
-# NVTop Web App - Left4HalfLife Edition
+# NVTop Web App
 
-A secure Flask web application that displays nvtop output in a browser with configurable action buttons for GPU management.
+An authenticated web dashboard for NVIDIA GPU status. It displays a one-shot
+`nvidia-smi` report and can expose administrator-defined action buttons without
+invoking a shell.
 
-## 🎯 Features
+## Requirements
 
-- **Live nvtop Display**: Real-time GPU monitoring in your browser
-- **Secure Action Buttons**: Configurable bash commands with strict security controls
-- **Authentication Required**: All API endpoints require auth tokens
-- **Least Privilege**: Runs as dedicated non-root user
-- **No Shell Injection**: Direct process calls, fixed arguments only
-- **Audit Logging**: All actions are logged for security review
+- Linux with a working NVIDIA driver
+- Docker with the Compose plugin
+- NVIDIA Container Toolkit configured for Docker
 
-## 🔒 Security Architecture
-
-### Core Principles Implemented:
-
-1. **No Dynamic Shell Building**
-   ```python
-   # ❌ BAD: Never do this
-   exec("bash -c " + userInput)
-   
-   # ✅ GOOD: Direct subprocess with fixed args
-   subprocess.run(["nvtop", "-d"], shell=False, timeout=30)
-   ```
-
-2. **No User-Controlled Arguments**
-   - Buttons send `{action: "unload_lms"}` only
-   - No parameters passed to actions
-   - All operations are pre-configured and fixed
-
-3. **Avoid Shell Where Possible**
-   ```python
-   # ✅ Using argument array, no shell
-   subprocess.run(["/opt/actions/unload_lms.sh"], 
-                  shell=False, capture_output=True)
-   ```
-
-4. **Least Privilege Execution**
-   - Docker container runs as `nvtop` user (UID 1000)
-   - No sudo/root access in worker scripts
-   - Worker scripts run with restricted permissions
-
-5. **Strict Authentication**
-   - All `/api/*` endpoints require `X-Auth-Token` header
-   - Login endpoint for token acquisition
-   - Token stored in memory (not persisted)
-
-## 📋 Files
-
-```
-nvtop-webpage/
-├── app.py                      # Flask API with auth protection
-├── config.py                   # Button-to-command mapping
-├── Dockerfile                  # Multi-stage build (builder → minimal runtime)
-├── requirements.txt            # Python dependencies
-├── run.sh                      # Start script
-├── instance/
-│   └── config.json.example     # Runtime action configuration (copy to config.json)
-└── opt/nvtop/actions/
-    ├── unload_lms.sh           # Worker: unload LMS module
-    ├── reload_drivers.sh       # Worker: reload GPU drivers
-    └── clear_gpu_cache.sh      # Worker: clear GPU cache
-```
-
-## 🔧 Configuration
-
-### Authentication (Environment Variables)
+Confirm GPU access before setup:
 
 ```bash
-export AUTH_USER="nvtop-admin"
-export AUTH_PASSWORD="your-secret-password"
-export PORT=5000
-export CONFIG_PATH="instance/config.json"
-export AUTH_TOKEN_HEADER="X-Auth-Token"
+nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
 ```
 
-### Runtime Configuration (`instance/config.json`)
+## Setup
 
-Copy `config.json.example` to `config.json`:
+```bash
+cd nvtop-webpage
+chmod +x setup.sh
+./setup.sh
+docker compose up -d
+```
+
+The setup script creates `.env` with random credentials, prepares the audit-log
+directory, and builds the image. Display the generated username and password:
+
+```bash
+grep '^NVTOP_AUTH_' .env
+```
+
+Open <http://127.0.0.1:5001> and log in. Check startup status with:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 nvtop-webapp
+```
+
+Stop the app with:
+
+```bash
+docker compose down
+```
+
+## Action Buttons
+
+Actions are defined in `instance/config.json`. Commands must be argument arrays;
+they are executed directly with `shell=False` and receive no browser-supplied
+arguments.
 
 ```json
 {
-    "log_file": "logs/action.log",
-    
-    "actions": {
-        "unload_lms": {
-            "description": "Unload LMS application from GPU",
-            "command": ["/opt/nvtop/actions/unload_lms.sh"],
-            "timeout": 30,
-            "args": {},
-            "requires_restart": false
-        }
+  "actions": {
+    "list_gpus": {
+      "description": "List GPUs",
+      "command": ["nvidia-smi", "-L"],
+      "timeout": 10
     }
+  }
 }
 ```
 
-**⚠️ Security Note**: 
-- Action `command` is NEVER overridden by user config (prevents injection)
-- Only safe fields like `description`, `timeout` can be overridden
-
-## 🐳 Docker Build & Run
-
-### Build Image
+The configuration file is trusted administrator input. Anyone who can edit it
+can execute commands as the container's `nvtop` user. Restart after changing it:
 
 ```bash
-docker build -t nvtop-webapp .
+docker compose restart nvtop-webapp
 ```
 
-### Run Container
+Scripts placed in `opt/nvtop/actions/` appear at the same path inside the
+container. They must be executable and use programs installed in the image.
+
+## Security
+
+- Compose binds the app to `127.0.0.1`; it is not exposed to the LAN by default.
+- API status and action endpoints require a login session or `X-Auth-Token`.
+- The container runs as UID 1000, drops Linux capabilities, and has a read-only
+  root filesystem. Only `instance/logs/` is writable.
+- Do not mount the Docker socket, add `privileged: true`, or grant kernel-module
+  capabilities to the web app.
+- Use an authenticated HTTPS reverse proxy before allowing remote access.
+- Never commit `.env`; it contains the login password and session secret.
+
+For optional local development and API examples, see `DEVELOPMENT.md`. For the
+deployment threat model, see `SECURITY.md`.
+
+## Troubleshooting
+
+`no matching device driver` or `could not select device driver` means NVIDIA
+Container Toolkit is missing or not configured for Docker.
+
+`nvidia-smi is not available` means the NVIDIA runtime did not inject its tools
+into the container. Re-run the GPU-access check from the Requirements section.
+
+If the container cannot write the audit log:
 
 ```bash
-docker run -d \
-  --name nvtop-webapp \
-  -p 5000:5000 \
-  -e AUTH_USER="nvtop-admin" \
-  -e AUTH_PASSWORD="your-password" \
-  nvtop-webapp
+mkdir -p instance/logs
+chmod 700 instance/logs
 ```
-
-### Access Web UI
-
-Open http://localhost:5000 in your browser. Use `/api/login` to authenticate and get a token, then refresh the page or use the provided auth mechanism.
-
-## 🚀 Local Development
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy config example (create instance directory first)
-mkdir -p instance && cp instance/config.json.example instance/config.json
-
-# Start app
-python app.py
-# or
-./run.sh --auth-user nvtop-admin --auth-password mypassword --port 5000
-```
-
-## 📡 API Endpoints
-
-### Authentication
-
-- `POST /api/login` - Authenticate and get token
-  ```json
-  { "user": "nvtop-admin", "password": "your-secret" }
-  ```
-  
-- `POST /api/logout` - Logout (requires auth)
-
-### GPU Monitoring
-
-- `GET /api/status` - Get current nvtop screen (requires auth)
-
-### Actions
-
-- `POST /api/action/{action_name}` - Run configured action (requires auth)
-  ```json
-  { "payload": {} }  // Optional args per action definition
-  ```
-
-Example: `/api/action/unload_lms`
-
-## ⚙️ Customizing Actions
-
-To add a new action button:
-
-1. Edit `instance/config.json`
-2. Add action definition:
-```json
-{
-    "my_action": {
-        "description": "Do something cool",
-        "command": ["nvtop", "-o", "/tmp/custom.png"],
-        "timeout": 30,
-        "args": {"mode": "custom"},
-        "requires_restart": false
-    }
-}
-```
-
-**⚠️ IMPORTANT**: The `command` field MUST match an actual executable. Do not set to user input.
-
-## 🛡️ Worker Script Template
-
-Create worker scripts in `/opt/nvtop/actions/`:
-
-```bash
-#!/bin/bash
-set -euo pipefail  # Fail on error, undefined vars, pipe failures
-
-# Your operation here
-# Example: restricted operation with fixed path
-nvidia-smi some-command --fixed-arg
-
-# Log completion
-echo "[$(date)] Operation completed" >> /opt/nvtop/logs/action.log
-exit 0
-```
-
-Make executable:
-```bash
-chmod +x /opt/nvtop/actions/your_action.sh
-```
-
-## 📝 Logging
-
-All actions are logged to files specified in config. Check `instance/logs/` for audit trail.
-
-## 🔮 Future Enhancements
-
-- [ ] OAuth2 integration
-- [ ] Rate limiting on action endpoints
-- [ ] Action permission levels (admin/user)
-- [ ] Docker compose with dedicated user setup
-- [ ] Health check probes for load balancers

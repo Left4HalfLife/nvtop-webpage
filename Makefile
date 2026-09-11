@@ -1,58 +1,46 @@
 # Makefile for nvtop-webpage
 
-.PHONY: help install dev run docker docker-build docker-run test clean lint check
+.PHONY: help install run setup up down logs build check clean
 
 help: ## Show this help message
 	@echo "Available commands:"
 	@echo "  make install    - Install Python dependencies"
-	@echo "  make dev        - Run Flask app with auto-reload (development)"
-	@echo "  make run        - Run Flask app (production)"
-	@echo "  make docker     - Build Docker image"
-	@echo "  make docker-run - Run container locally"
+	@echo "  make setup      - Generate secrets and build the image"
+	@echo "  make up         - Start the Compose service"
+	@echo "  make down       - Stop the Compose service"
+	@echo "  make logs       - Follow application logs"
+	@echo "  make run        - Run locally (requires AUTH_PASSWORD and SECRET_KEY)"
+	@echo "  make check      - Validate source and configuration"
 	@echo "  make clean      - Remove temporary files"
 
-install: ## Install Python dependencies
-	pip install -r requirements.txt
+install:
+	python3 -m pip install -r requirements.txt
 
-dev: install ## Run Flask app with auto-reload (development)
-	FLASK_DEBUG=true python app.py
+run:
+	./run.sh
 
-run: install ## Run Flask app (production)
-	FLASK_ENV=production python app.py
+setup:
+	./setup.sh
 
-docker-build: ## Build Docker image
-	docker build -t nvtop-webapp .
+up:
+	docker compose up -d
 
-docker-run: ## Run container locally (useful for testing)
-	docker run -d \
-		--name nvtop-webapp \
-		-p 5000:5000 \
-		-e AUTH_USER="nvtop-admin" \
-		-e AUTH_PASSWORD="your-secret-password-here" \
-		nvtop-webapp
+down:
+	docker compose down
 
-docker-stop: ## Stop running container
-	docker stop nvtop-webapp || true
+logs:
+	docker compose logs -f nvtop-webapp
 
-docker-clean: docker-stop ## Clean up old containers and images
-	docker rm nvtop-webapp 2>/dev/null || true
-	docker rmi nvtop-webapp 2>/dev/null || true
-	docker system prune -f
+build:
+	docker compose build
 
-check: lint test ## Run lint and tests
+check:
+	python3 -m py_compile app.py
+	python3 -m json.tool instance/config.json >/dev/null
+	bash -n setup.sh run.sh opt/nvtop/actions/*.sh
+	docker compose config --quiet
 
-lint: ## Check code style (if flake8/pylint is installed)
-	flake8 app.py config.py || echo "Lint issues found (optional)"
-
-test: install ## Run any tests (add tests later)
-	echo "Tests would run here. Add pytest/unit tests as needed."
-
-clean: ## Remove temporary files
-	rm -rf __pycache__/*.pyc
+clean:
+	rm -rf __pycache__
 	find . -type d -name "__pycache__" -exec rm -r {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete 2>/dev/null || true
-
-check-sys: ## Check system requirements
-	@echo "Checking Python version..."
-	python3 --version
-	@echo "Python is installed. Next: Run 'make install'"

@@ -64,7 +64,6 @@ db.sqlite3-journal
 # Flask stuff:
 instance/*.log
 !instance/config.json
-instance/config.json.example
 
 # Also ignore logs directory in instance (runtime data)
 instance/logs/

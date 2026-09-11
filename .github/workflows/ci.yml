@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
@@ -30,12 +30,10 @@ jobs:
 
     - name: Lint with flake8
       run: |
-        flake8 app.py config.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 app.py tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
 
-    - name: Run tests (placeholder)
-      run: |
-        echo "Add pytest tests here when ready"
-        python -m pytest tests/ 2>/dev/null || echo "No tests defined yet"
+    - name: Run tests
+      run: python -m pytest tests/
 
   security-scan:
     name: Security Scan (Filesystem)
@@ -43,7 +41,7 @@ jobs:
     needs: test
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Run Trivy filesystem scan
       uses: aquasecurity/trivy-action@v0.36.0
