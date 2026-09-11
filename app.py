@@ -3,233 +3,173 @@
 nvtop Web App - Secure Flask API for monitoring and system actions
 """
 
-import os
+import hmac
 import json
-from flask import Flask, request, jsonify
-import subprocess
+import os
+import re
 import secrets
+import subprocess
+from datetime import datetime, timezone
 from functools import wraps
+from pathlib import Path
+
+from flask import Flask, request, jsonify, render_template, session
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-CONFIG_PATH = os.environ.get('CONFIG_PATH', 'instance/config.json')
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "false").lower() == "true",
+)
 
-# CORS middleware for browser access
-from flask_cors import CORS
-CORS(app)
+CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "instance/config.json"))
+LOG_PATH = Path(os.environ.get("LOG_PATH", "instance/logs/action.log"))
+AUTH_TOKEN_HEADER = os.environ.get("AUTH_TOKEN_HEADER", "X-Auth-Token")
+ACTION_NAME_PATTERN = re.compile(r"^[a-z0-9_]+$")
 
-with open(CONFIG_PATH) as f:
-    CONFIG = json.load(f)
+with CONFIG_PATH.open(encoding="utf-8") as config_file:
+    CONFIG = json.load(config_file)
 
-AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '')
-AUTH_TOKEN_HEADER = os.environ.get('AUTH_TOKEN_HEADER', 'X-Auth-Token')
+if not isinstance(CONFIG.get("actions"), dict):
+    raise ValueError("config actions must be an object")
+for action_name, action in CONFIG["actions"].items():
+    command = action.get("command") if isinstance(action, dict) else None
+    if not ACTION_NAME_PATTERN.fullmatch(action_name):
+        raise ValueError(f"invalid action name: {action_name}")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(argument, str) and argument for argument in command
+    ):
+        raise ValueError(f"action {action_name} must have a non-empty command array")
+    timeout = action.get("timeout", 30)
+    if not isinstance(timeout, int) or not 1 <= timeout <= 300:
+        raise ValueError(f"action {action_name} timeout must be between 1 and 300")
 
 
-def require_auth(f):
-    """Decorator to require authentication"""
-    @wraps(f)
+def require_auth(function):
+    """Require either an authenticated browser session or configured API token."""
+    @wraps(function)
     def decorated(*args, **kwargs):
-        token = request.headers.get(AUTH_TOKEN_HEADER) or \
-                 request.args.get('token') or \
-                 request.form.get('token')
-        
-        if not token or token != AUTH_TOKEN:
+        configured_token = os.environ.get("AUTH_TOKEN", "")
+        supplied_token = request.headers.get(AUTH_TOKEN_HEADER, "")
+        token_valid = bool(configured_token) and hmac.compare_digest(
+            supplied_token, configured_token
+        )
+        if not session.get("authenticated") and not token_valid:
             return jsonify({"error": "Unauthorized"}), 401
-        return f(*args, **kwargs)
+        return function(*args, **kwargs)
     return decorated
 
 
 # ============== API ENDPOINTS ==============
 
-@app.route('/api/status', methods=['GET'])
+@app.get('/api/status')
 @require_auth
 def get_status():
-    """Get current nvtop screen output"""
+    """Get a one-shot GPU status report."""
     try:
         result = subprocess.run(
-            ["nvtop", "-d"],
+            ["nvidia-smi"],
             shell=False,
             capture_output=True,
             text=True,
-            timeout=CONFIG.get('timeout', 30) if 'status' in CONFIG['actions'] else 10
+            timeout=10,
+            check=False,
         )
-        
-        return jsonify({
-            "output": result.stdout,
-            "stderr": result.stderr if result.returncode != 0 else ""
-        })
+        if result.returncode != 0:
+            return jsonify({"error": result.stderr.strip() or "GPU status failed"}), 503
+        return jsonify({"output": result.stdout})
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Command timed out"}), 504
+        return jsonify({"error": "GPU status command timed out"}), 504
     except FileNotFoundError:
-        return jsonify({"error": "nvtop binary not found - is it installed?"}), 500
-    except Exception as e:
-        app.logger.exception("Failed to get nvtop status")
-        return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"error": "nvidia-smi is not available"}), 503
 
 
-@app.route('/api/action/<action_name>', methods=['POST'])
-@require_auth
-def run_action(action_name):
-    """Run a configured action"""
-    from datetime import datetime
-    
-    action_config = CONFIG['actions'].get(action_name)
-    
-    if not action_config:
-        return jsonify({"error": f"Action '{action_name}' not configured"}), 404
-    
-    try:
-        # Log action execution for audit
-        log_entry = f"{datetime.now().isoformat()} | Action: {action_name}"
-        log_path = CONFIG.get('log_file', 'instance/logs/action.log')
-        os.makedirs(os.path.dirname(log_path) or '.', exist_ok=True)
-        with open(log_path, 'a') as log_f:
-            log_f.write(log_entry + '\n')
-        
-        # Run the command - NEVER with shell, fixed arguments only
-        result = subprocess.run(
-            action_config['command'],
-            shell=False,  # CRITICAL: Never use shell=True
-            capture_output=True,
-            text=True,
-            timeout=action_config.get('timeout', 60)
-        )
-        
-        if result.returncode == 0:
-            return jsonify({
-                "success": True,
-                "message": action_name + " completed",
-                "output": result.stdout
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "error": f"Action failed with code {result.returncode}",
-                "output": result.stdout,
-                "stderr": result.stderr
-            }), 500
-            
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": f"Action '{action_name}' timed out"}), 504
-    except Exception as e:
-        app.logger.exception("Failed to run action '%s'", action_name)
-        return jsonify({"error": "Internal server error"}), 500
+@app.get("/healthz")
+def healthcheck():
+    return jsonify({"status": "ok"})
 
 
-@app.route('/api/login', methods=['POST'])
+@app.post("/api/login")
 def login():
-    """Authenticate and get a token"""
-    user = request.json.get('user', '') if request.is_json else ''
-    password = request.form.get('password', '')
-    
-    expected_user = os.environ.get('AUTH_USER', 'nvtop-admin')
-    expected_pass = os.environ.get('AUTH_PASSWORD', '')
-    
-    if user == expected_user and password == expected_pass:
-        token = secrets.token_urlsafe(32)
-        app.secret_token = token
-        return jsonify({
-            "token": token,
-            "message": "Login successful"
-        })
-    
+    credentials = request.get_json(silent=True) or {}
+    expected_user = os.environ.get("AUTH_USER", "nvtop-admin")
+    expected_password = os.environ.get("AUTH_PASSWORD", "")
+    supplied_user = credentials.get("user", "")
+    supplied_password = credentials.get("password", "")
+
+    if not expected_password:
+        return jsonify({"error": "Authentication is not configured"}), 503
+    if not isinstance(supplied_user, str) or not isinstance(supplied_password, str):
+        return jsonify({"error": "Invalid credentials"}), 401
+    if hmac.compare_digest(supplied_user, expected_user) and hmac.compare_digest(
+        supplied_password, expected_password
+    ):
+        session.clear()
+        session["authenticated"] = True
+        return jsonify({"message": "Login successful"})
     return jsonify({"error": "Invalid credentials"}), 401
 
 
-@app.route('/api/logout', methods=['POST'])
+@app.post("/api/logout")
 @require_auth
 def logout():
-    """Logout and invalidate token"""
-    app.secret_token = None
-    return jsonify({"message": "Logged out successfully"})
+    session.clear()
+    return jsonify({"message": "Logged out"})
 
 
-# ============== HTML TEMPLATES ==============
+@app.post("/api/action/<action_name>")
+@require_auth
+def run_action(action_name):
+    action = CONFIG["actions"].get(action_name)
+    if action is None:
+        return jsonify({"error": "Action not configured"}), 404
 
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NVTop Monitor</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: #1a1a2e; color: #eee; font-family: 'Courier New', monospace; padding: 20px; }
-        h1 { color: #4ecca3; margin-bottom: 20px; }
-        .screen { background: #0f0f23; border: 2px solid #4ecca3; border-radius: 8px; padding: 15px; height: 60vh; overflow: auto; white-space: pre-wrap; font-size: 12px; line-height: 1.4; }
-        .actions { margin-top: 20px; display: grid; gap: 10px; }
-        button { background: #4ecca3; color: #1a1a2e; border: none; padding: 12px 20px; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 4px; transition: all 0.2s; }
-        button:hover { background: #3db892; }
-        .status { margin-top: 10px; padding: 10px; border-radius: 4px; display: none; }
-        .status.success { background: #2d5a27; display: block; }
-        .status.error { background: #8b2727; display: block; }
-    </style>
-</head>
-<body>
-    <h1>🔌 NVTop Monitor - Left4HalfLife Edition</h1>
-    <div id="screen" class="screen">Initializing...</div>
-    <div id="status" class="status"></div>
+    timestamp = datetime.now(timezone.utc).isoformat()
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            action["command"],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=action.get("timeout", 30),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        with LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"{timestamp} action={action_name} result=timeout\n")
+        return jsonify({"error": "Action timed out"}), 504
+    except (FileNotFoundError, PermissionError) as error:
+        with LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"{timestamp} action={action_name} result=unavailable\n")
+        return jsonify({"error": str(error)}), 503
 
-    <script>
-        const screen = document.getElementById('screen');
-        const status = document.getElementById('status');
-        
-        async function refreshScreen() {
-            try {
-                const response = await fetch('/api/status', { headers: { 'X-Auth-Token': getAuthHeader() } });
-                if (!response.ok) throw new Error('Failed');
-                const data = await response.json();
-                screen.textContent = data.output || '';
-            } catch (e) { screen.textContent = 'Error: ' + e.message; }
-        }
-        
-        async function runAction(actionName) {
-            status.className = 'status';
-            status.style.display = 'block';
-            try {
-                const response = await fetch('/api/action/' + actionName, {
-                    headers: { 'X-Auth-Token': getAuthHeader(), 'Content-Type': 'application/json' },
-                    method: 'POST', body: '{}'
-                });
-                const data = await response.json();
-                if (response.ok) {
-                    status.className = 'status success';
-                    status.textContent = '✓ ' + (data.message || actionName + ' completed');
-                    setTimeout(refreshScreen, 1000);
-                } else {
-                    throw new Error(data.error || 'Failed');
-                }
-            } catch (e) { status.className = 'status error'; status.textContent = '✗ ' + e.message; }
-        }
-        
-        function getAuthHeader() { return window.localStorage.getItem('nvtop_auth_token') || ''; }
-        
-        refreshScreen(); setInterval(refreshScreen, 100);
-
-        <!-- Action buttons injected below -->
-    </script>
-</body>
-</html>
-'''
+    with LOG_PATH.open("a", encoding="utf-8") as log_file:
+        log_file.write(f"{timestamp} action={action_name} result=exit-{result.returncode}\n")
+    if result.returncode != 0:
+        return jsonify({
+            "error": "Action failed",
+            "output": result.stdout,
+            "stderr": result.stderr,
+        }), 500
+    return jsonify({
+        "message": f"{action_name} completed",
+        "output": result.stdout,
+    })
 
 
-@app.route('/')
+@app.get("/")
 def index():
-    """Render the main HTML page with config-injected actions"""
-    actions_html = ''
-    for action_name, action_config in CONFIG['actions'].items():
-        if action_name == 'status':
-            continue
-        
-        actions_html += f'<div><button onclick="runAction(\'{action_name}\')">⚡ {action_config.get("description", action_name)}</button></div>'
-    
-    return HTML_TEMPLATE.replace('<!-- Action buttons injected below -->', actions_html)
+    actions = [
+        {
+            "name": action_name,
+            "description": action.get("description", action_name),
+        }
+        for action_name, action in CONFIG["actions"].items()
+    ]
+    return render_template("index.html", actions=actions)
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
-    print(f"Starting nvtop web app on port {port}")
-    print(f"Auth token: {'SET' if AUTH_TOKEN else 'NOT SET (use /api/login)'}")
-    app.run(host='0.0.0.0', port=port, debug=debug)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
